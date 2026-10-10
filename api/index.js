@@ -1,4 +1,4 @@
-// api/index.js (Vercel Serverless Function - Route: /api?id=...)
+// api/index.js (Vercel Serverless Function - Payment & Tier Permission Engine)
 import crypto from 'crypto';
 
 export default async function handler(req, res) {
@@ -18,12 +18,11 @@ export default async function handler(req, res) {
         return res.status(400).json({ error: "id required" });
     }
 
-    // ─── BINANCE API CONFIGURATION (Environment Variables se lein) ───
     const API_KEY = process.env.BINANCE_API_KEY || "dl7afnQdUgJl8QqVD0vlN1qk9B6ECILcyPHBFhDYw1oqu3JZlJpEkmg0SGTvW28L";
     const SECRET_KEY = process.env.BINANCE_SECRET_KEY || "Obl08n7w6wO7S2OZcNajlXHBYkHRDCRYSrXnozv88VsYfAjRvdpbvTUf0eRdWVmH";
 
     try {
-        // 1. Check karo ke user pehle se database/remote API me registered aur active hai ya nahi
+        // 1. Check existing database status
         const mainAuthAPI = "https://magic-scripts.vercel.app/api/q?id=" + id;
         const mainRes = await fetch(mainAuthAPI).catch(() => null);
         const mainData = mainRes && mainRes.ok ? await mainRes.json() : null;
@@ -31,21 +30,13 @@ export default async function handler(req, res) {
         const now = new Date();
 
         if (mainData && mainData.authorized === true) {
-            // Check expiry date (Month completion auto-lock check)
-            if (mainData.expiresAt) {
-                const expiryDate = new Date(mainData.expiresAt);
-                if (expiryDate < now) {
-                    return res.status(200).json({ 
-                        status: "expired", 
-                        authorized: false, 
-                        message: "Subscription expired after 1 month. Please renew." 
-                    });
-                }
+            if (mainData.expiresAt && new Date(mainData.expiresAt) < now) {
+                return res.status(200).json({ status: "expired", authorized: false, permissions: {} });
             }
-            return res.status(200).json({ status: "success", authorized: true });
+            return res.status(200).json({ status: "success", authorized: true, permissions: mainData.permissions });
         }
 
-        // 2. Agar authorized nahi hai, toh Binance API se deposit/payment history check karo
+        // 2. Fetch Binance Deposit / Payment History using System-Generated API/Secret Keys
         if (API_KEY && SECRET_KEY) {
             const timestamp = Date.now();
             const queryString = `timestamp=${timestamp}`;
@@ -57,9 +48,7 @@ export default async function handler(req, res) {
             const binanceUrl = `https://api.binance.com/sapi/v1/capital/deposit/hisrec?${queryString}&signature=${signature}`;
             
             const binanceRes = await fetch(binanceUrl, {
-                headers: {
-                    'X-MBX-APIKEY': API_KEY
-                }
+                headers: { 'X-MBX-APIKEY': API_KEY }
             });
 
             if (binanceRes.ok) {
@@ -67,24 +56,34 @@ export default async function handler(req, res) {
                 const validPayment = Array.isArray(deposits) && deposits.find(dep => dep.status === 1);
 
                 if (validPayment) {
+                    const amount = parseFloat(validPayment.amount || 0);
+                    let assignedPermissions = {};
+
+                    // Tier-based permission logic based on payment amount
+                    if (amount >= 10 && amount <= 15) {
+                        assignedPermissions = { android: true, pc: true };
+                    } else if (amount >= 20 && amount <= 25) {
+                        assignedPermissions = { android: true, pc: true, win: true, p: true };
+                    } else if (amount >= 26) {
+                        assignedPermissions = { ana: true, android: true, lb: true, p: true, pc: true, t: true, win: true };
+                    } else {
+                        assignedPermissions = { android: true, pc: true }; // Default minimum tier
+                    }
+
                     return res.status(200).json({ 
                         status: "verified", 
                         authorized: true, 
-                        message: "Payment received successfully! Script unlocked." 
+                        permissions: assignedPermissions,
+                        message: "Payment verified successfully!" 
                     });
                 }
             }
         }
 
-        // Agar payment nahi mili ya unauthorized hai
-        return res.status(200).json({ 
-            status: "locked", 
-            authorized: false, 
-            message: "Payment not detected or unauthorized device ID." 
-        });
+        return res.status(200).json({ status: "locked", authorized: false });
 
     } catch (error) {
         console.error("Payment API Error:", error);
         return res.status(500).json({ error: "Internal Server Error" });
     }
-                                           }
+}
