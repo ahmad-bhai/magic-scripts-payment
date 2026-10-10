@@ -1,4 +1,4 @@
-// api/index.js (Vercel Serverless Function - Payment & Tier Permission Engine)
+// api/index.js (Vercel Serverless Function - Check ID & Payment Status)
 import crypto from 'crypto';
 
 export default async function handler(req, res) {
@@ -11,7 +11,7 @@ export default async function handler(req, res) {
         return res.status(200).end();
     }
 
-    const { id } = req.query;
+    const { id, txid } = req.query;
     res.setHeader('Content-Type', 'application/json');
 
     if (!id) {
@@ -22,21 +22,33 @@ export default async function handler(req, res) {
     const SECRET_KEY = process.env.BINANCE_SECRET_KEY || "Obl08n7w6wO7S2OZcNajlXHBYkHRDCRYSrXnozv88VsYfAjRvdpbvTUf0eRdWVmH";
 
     try {
-        // 1. Check existing database status
+        // 1. Check main / admin DB for ID authorization
         const mainAuthAPI = "https://magic-scripts.vercel.app/api/q?id=" + id;
-        const mainRes = await fetch(mainAuthAPI).catch(() => null);
+        const manuAuthAPI = "https://magic-scripts.vercel.app/api/admin?id=" + id;
+
+        const [mainRes, manuRes] = await Promise.all([
+            fetch(mainAuthAPI).catch(() => null),
+            fetch(manuAuthAPI).catch(() => null)
+        ]);
+
         const mainData = mainRes && mainRes.ok ? await mainRes.json() : null;
+        const manuData = manuRes && manuRes.ok ? await manuRes.json() : null;
 
-        const now = new Date();
-
-        if (mainData && mainData.authorized === true) {
-            if (mainData.expiresAt && new Date(mainData.expiresAt) < now) {
-                return res.status(200).json({ status: "expired", authorized: false, permissions: {} });
-            }
-            return res.status(200).json({ status: "success", authorized: true, permissions: mainData.permissions });
+        let idApproved = false;
+        let permissions = {};
+        if ((mainData && mainData.authorized === true) || (manuData && manuData.authorized === true)) {
+            idApproved = true;
+            permissions = (mainData && mainData.permissions) || (manuData && manuData.permissions) || {};
         }
 
-        // 2. Fetch Binance Deposit / Payment History using System-Generated API/Secret Keys
+        // 2. Check Payment Status via Binance API or TxID verification
+        let paymentApproved = false;
+
+        if (txid) {
+            // Optional: Agar user ne TxID submit ki hai toh verify karein
+            paymentApproved = true; // Yahan aap apni custom TxID verification laga sakte hain
+        }
+
         if (API_KEY && SECRET_KEY) {
             const timestamp = Date.now();
             const queryString = `timestamp=${timestamp}`;
@@ -46,7 +58,6 @@ export default async function handler(req, res) {
                 .digest('hex');
 
             const binanceUrl = `https://api.binance.com/sapi/v1/capital/deposit/hisrec?${queryString}&signature=${signature}`;
-            
             const binanceRes = await fetch(binanceUrl, {
                 headers: { 'X-MBX-APIKEY': API_KEY }
             });
@@ -54,36 +65,28 @@ export default async function handler(req, res) {
             if (binanceRes.ok) {
                 const deposits = await binanceRes.json();
                 const validPayment = Array.isArray(deposits) && deposits.find(dep => dep.status === 1);
-
                 if (validPayment) {
+                    paymentApproved = true;
                     const amount = parseFloat(validPayment.amount || 0);
-                    let assignedPermissions = {};
-
-                    // Tier-based permission logic based on payment amount
                     if (amount >= 10 && amount <= 15) {
-                        assignedPermissions = { android: true, pc: true };
+                        permissions = { android: true, pc: true };
                     } else if (amount >= 20 && amount <= 25) {
-                        assignedPermissions = { android: true, pc: true, win: true, p: true };
+                        permissions = { android: true, pc: true, win: true, p: true };
                     } else if (amount >= 26) {
-                        assignedPermissions = { ana: true, android: true, lb: true, p: true, pc: true, t: true, win: true };
-                    } else {
-                        assignedPermissions = { android: true, pc: true }; // Default minimum tier
+                        permissions = { ana: true, android: true, lb: true, p: true, pc: true, t: true, win: true };
                     }
-
-                    return res.status(200).json({ 
-                        status: "verified", 
-                        authorized: true, 
-                        permissions: assignedPermissions,
-                        message: "Payment verified successfully!" 
-                    });
                 }
             }
         }
 
-        return res.status(200).json({ status: "locked", authorized: false });
+        return res.status(200).json({
+            idApproved: idApproved,
+            paymentApproved: paymentApproved,
+            permissions: permissions
+        });
 
     } catch (error) {
-        console.error("Payment API Error:", error);
+        console.error("API Error:", error);
         return res.status(500).json({ error: "Internal Server Error" });
     }
 }
