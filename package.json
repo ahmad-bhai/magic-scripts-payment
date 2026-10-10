@@ -1,0 +1,10 @@
+{
+  "name": "magic-scripts-pay",
+  "version": "1.0.0",
+  "description": "Vercel serverless payment & auth handler",
+  "main": "api/index.js",
+  "scripts": {
+    "start": "node api/index.js"
+  },
+  "dependencies": {}
+}
